@@ -1,4 +1,5 @@
-import { Client } from "@notionhq/client";
+// api/next-task.js
+const { Client } = require("@notionhq/client");
 
 const {
   NOTION_TOKEN,
@@ -6,33 +7,41 @@ const {
   NEXT_TASK_SECRET,
 } = process.env;
 
+// ---- EDIT THESE if your property names differ ----
 const PROP = {
-  done: "Done",
-  scheduled: "Scheduled",
-  status: "Status",
-  priority: "Priority",
+  done: "Done",        // checkbox
+  scheduled: "Date",   // <-- your date column is named "Date"
+  status: "Status",    // select (optional)
+  priority: "Priority" // select (optional; safe if missing)
 };
-
 const STATUS_ORDER = ["Now", "Active"];
 const PRIORITY_ORDER = ["High", "Medium", "Low"];
+// --------------------------------------------------
 
 const notion = new Client({ auth: NOTION_TOKEN });
 
-export default async function handler(req, res) {
+// Helper: get the title text regardless of the title property name
+function getTitleFromProps(props) {
+  for (const [key, val] of Object.entries(props)) {
+    if (val?.type === "title") {
+      const arr = val.title || [];
+      return arr.map(t => t.plain_text).join("") || "Untitled";
+    }
+  }
+  return "Untitled";
+}
+
+module.exports = async (req, res) => {
   try {
     if (!NEXT_TASK_SECRET || req.query.key !== NEXT_TASK_SECRET) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
+    // Pull open tasks
     const query = await notion.databases.query({
       database_id: NOTION_DATABASE_ID,
-      filter: {
-        property: PROP.done,
-        checkbox: { equals: false },
-      },
-      sorts: [
-        { property: PROP.scheduled, direction: "ascending" },
-      ],
+      filter: { property: PROP.done, checkbox: { equals: false } },
+      sorts: [{ property: PROP.scheduled, direction: "ascending" }],
       page_size: 50,
     });
 
@@ -40,12 +49,11 @@ export default async function handler(req, res) {
 
     const tasks = query.results.map((p) => {
       const props = p.properties || {};
-      const title =
-        (props.Name?.title?.map(t => t.plain_text).join("") ?? "") ||
-        (p.url ?? "Untitled");
+      const title = getTitleFromProps(props);
 
       const status = props[PROP.status]?.select?.name || null;
       const priority = props[PROP.priority]?.select?.name || null;
+
       const dateProp = props[PROP.scheduled]?.date || null;
       const start = dateProp?.start ? new Date(dateProp.start) : null;
 
@@ -60,23 +68,19 @@ export default async function handler(req, res) {
       };
     });
 
+    // Rank: Now/Active → overdue (earliest first) → upcoming (soonest) → no date
     const rank = (t) => {
-      const hasHotStatus = t.status && STATUS_ORDER.includes(t.status);
-      const bucket = hasHotStatus ? 0 : (t.scheduled ? (t.isOverdue ? 1 : 2) : 3);
-      const statusRank = hasHotStatus ? STATUS_ORDER.indexOf(t.status) : 99;
+      const hot = t.status && STATUS_ORDER.includes(t.status);
+      const bucket = hot ? 0 : (t.scheduled ? (t.isOverdue ? 1 : 2) : 3);
+      const statusRank = hot ? STATUS_ORDER.indexOf(t.status) : 99;
       const whenRank = t.scheduled ? new Date(t.scheduled).getTime() : Number.MAX_SAFE_INTEGER;
-      const priorityRank = t.priority
-        ? PRIORITY_ORDER.indexOf(t.priority)
-        : PRIORITY_ORDER.length;
+      const priorityRank = t.priority ? PRIORITY_ORDER.indexOf(t.priority) : PRIORITY_ORDER.length;
       return [bucket, statusRank, whenRank, priorityRank];
     };
 
     tasks.sort((a, b) => {
-      const ra = rank(a);
-      const rb = rank(b);
-      for (let i = 0; i < ra.length; i++) {
-        if (ra[i] !== rb[i]) return ra[i] - rb[i];
-      }
+      const A = rank(a), B = rank(b);
+      for (let i = 0; i < A.length; i++) if (A[i] !== B[i]) return A[i] - B[i];
       return 0;
     });
 
@@ -85,19 +89,19 @@ export default async function handler(req, res) {
     return res.status(200).json({
       nextTask: next
         ? {
-          id: next.id,
-          title: next.title,
-          url: next.url,
-          status: next.status,
-          priority: next.priority,
-          scheduled: next.scheduled,
-          overdue: next.isOverdue,
-        }
+            id: next.id,
+            title: next.title,
+            url: next.url,
+            status: next.status,
+            priority: next.priority,
+            scheduled: next.scheduled,
+            overdue: next.isOverdue,
+          }
         : null,
       generatedAt: new Date().toISOString(),
     });
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: String(err?.message || err) });
   }
-}
+};
