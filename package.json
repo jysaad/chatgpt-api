@@ -1,0 +1,9 @@
+{
+  "name": "chatgpt-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "dependencies": {
+    "@notionhq/client": "^2.2.15"
+  }
+}
